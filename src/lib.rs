@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serenity::all::CacheHttp;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -452,7 +451,7 @@ pub struct CreateLockdown {
 }
 
 #[allow(async_fn_in_trait)]
-pub trait LockdownDataStore: Send + Send + CacheHttp {
+pub trait LockdownDataStore: Send + Send {
     /// Returns the guilds lockdown settings
     async fn get_guild_lockdown_settings(
         &self,
@@ -488,6 +487,12 @@ pub trait LockdownDataStore: Send + Send + CacheHttp {
         &self,
         guild_id: serenity::all::GuildId,
     ) -> Result<Vec<serenity::all::GuildChannel>, Error>;
+
+    /// Returns the serenity cache
+    fn cache(&self) -> Option<&serenity::all::Cache>;
+
+    /// Returns the serenity http client
+    fn http(&self) -> &serenity::all::Http;
 }
 
 /// Represents a list of lockdowns
@@ -615,7 +620,7 @@ impl<T: LockdownDataStore> LockdownSet<T> {
                 &created_lockdown.data,
                 &current_handles,
                 &self.lockdowns,
-                self.data_store.cache().map(|v| &**v),
+                self.data_store.cache(),
                 self.data_store.http(),
             )
             .await?;
@@ -679,7 +684,7 @@ impl<T: LockdownDataStore> LockdownSet<T> {
                 &lockdown.data,
                 &current_handles,
                 &self.lockdowns,
-                self.data_store.cache().map(|v| &**v),
+                self.data_store.cache(),
                 self.data_store.http(),
             )
             .await?;
