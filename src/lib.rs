@@ -568,7 +568,12 @@ impl Lockdown {
         }
     }
 
-    pub fn get_underlying<T, U>(
+    /// Returns the underlying permissions (or otherwise) for a given state
+    ///
+    /// This works by merging the shareable data from all lockdowns in the order of least recent first,
+    /// to ensure that the permissions are derived from the least recent lockdowns first and then using
+    /// `f` to extract the desired data from the merged sharable data
+    fn get_underlying<T, U>(
         lockdowns: &[Self],
         state: T,
         f: fn(&LockdownSharableData, &T) -> Option<U>,
@@ -607,7 +612,7 @@ impl Lockdown {
         f(&merged_lsd, &state)
     }
 
-    pub fn get_underlying_role_permissions(
+    fn get_underlying_role_permissions(
         lockdowns: &[Self],
         role_id: serenity::all::RoleId,
     ) -> Option<serenity::all::Permissions> {
@@ -616,7 +621,7 @@ impl Lockdown {
         })
     }
 
-    pub fn get_underlying_channel_permissions(
+    fn get_underlying_channel_permissions(
         lockdowns: &[Self],
         channel_id: serenity::all::ChannelId,
     ) -> Option<Vec<serenity::all::PermissionOverwrite>> {
