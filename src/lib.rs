@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serenity::all::{EditRole, GuildId};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -78,15 +79,190 @@ pub fn get_critical_roles(
     }
 }
 
-pub trait LockdownTestResult
-where
-    Self: Send + Sync,
-{
-    /// Returns whether the lockdown can be applied perfectly with the current server layout
-    fn can_apply_perfectly(&self) -> bool;
+/// The result of a lockdown test
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LockdownTestResult {
+    /// Which roles need to be changed/fixed combined with the target perms
+    pub role_changes_needed:
+        std::collections::HashMap<serenity::all::RoleId, (ChangeOp, serenity::all::Permissions)>,
 
-    /// Returns a string representation of the result
-    fn display_result(&self, pg: &serenity::all::PartialGuild) -> String;
+    /// Any extra changes needed
+    pub other_changes_needed: Vec<String>,
+}
+
+impl LockdownTestResult {
+    pub fn new(
+        role_changes_needed: std::collections::HashMap<
+            serenity::all::RoleId,
+            (ChangeOp, serenity::all::Permissions),
+        >,
+        other_changes_needed: Vec<String>,
+    ) -> Self {
+        Self {
+            role_changes_needed,
+            other_changes_needed,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            role_changes_needed: HashMap::with_capacity(0),
+            other_changes_needed: Vec::with_capacity(0),
+        }
+    }
+
+    pub fn can_apply_perfectly(&self) -> bool {
+        self.role_changes_needed.is_empty() && self.other_changes_needed.is_empty()
+    }
+
+    pub fn display_error(&self) -> String {
+        let mut needed_changes = String::new();
+
+        needed_changes.push_str(
+            format!(
+                "{} roles need to be changed:\n",
+                self.role_changes_needed.len()
+            )
+            .as_str(),
+        );
+
+        for (role_id, perms) in self.role_changes_needed.iter() {
+            needed_changes.push_str(&format!("Role: {} ({})\n", role_id, perms.0));
+            needed_changes.push_str(&format!("Permissions: {} {}\n", perms.0, perms.1));
+            needed_changes.push('\n');
+        }
+
+        if !self.other_changes_needed.is_empty() {
+            needed_changes.push_str("The following changes are needed:\n");
+            for (i, change) in self.other_changes_needed.iter().enumerate() {
+                if i == self.other_changes_needed.len() - 1 {
+                    needed_changes.push_str(change);
+                } else {
+                    needed_changes.push_str(&format!("{}\n", change));
+                }
+            }
+        }
+
+        needed_changes
+    }
+
+    pub fn display_changeset(&self, pg: &serenity::all::PartialGuild) -> String {
+        let mut needed_changes = String::new();
+
+        needed_changes.push_str("The following roles need to be changed:\n");
+        for (role_id, perms) in self.role_changes_needed.iter() {
+            let role_name = pg
+                .roles
+                .get(role_id)
+                .map(|r| r.name.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            needed_changes.push_str(&format!("Role: {} ({})\n", role_name, role_id));
+            needed_changes.push_str(&format!("Permissions: {} {}\n", perms.0, perms.1));
+            needed_changes.push('\n');
+        }
+
+        if !self.other_changes_needed.is_empty() {
+            needed_changes.push_str("The following changes are needed:\n");
+            for (i, change) in self.other_changes_needed.iter().enumerate() {
+                if i == self.other_changes_needed.len() - 1 {
+                    needed_changes.push_str(change);
+                } else {
+                    needed_changes.push_str(&format!("{}\n", change));
+                }
+            }
+        }
+
+        needed_changes
+    }
+
+    pub async fn try_auto_fix(
+        &self,
+        http: &serenity::all::Http,
+        pg: &mut serenity::all::PartialGuild,
+    ) -> Result<(), Error> {
+        for (role_id, (op, perms)) in self.role_changes_needed.iter() {
+            let mut role = pg
+                .roles
+                .get_mut(role_id)
+                .ok_or_else(|| format!("Role {} not found", role_id))?;
+
+            let new_permissions = match op {
+                ChangeOp::Add => {
+                    let mut new_perms = role.permissions;
+                    new_perms.insert(*perms);
+                    new_perms
+                }
+                ChangeOp::Remove => {
+                    let mut new_perms = role.permissions;
+                    new_perms.remove(*perms);
+                    new_perms
+                }
+            };
+
+            // Update the role permissions
+            role.edit(
+                http,
+                EditRole::new()
+                    .permissions(new_permissions)
+                    .audit_log_reason("Lockdown auto-fix"),
+            )
+            .await
+            .map_err(|e| format!("Error while editing role {}: {}", role_id, e))?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum LockdownError {
+    Error(crate::Error),
+    LockdownTestFailed(LockdownTestResult),
+}
+
+impl std::fmt::Display for LockdownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockdownError::Error(e) => write!(f, "{}", e),
+            LockdownError::LockdownTestFailed(e) => write!(f, "{}", e.display_error()),
+        }
+    }
+}
+
+impl From<LockdownTestResult> for LockdownError {
+    fn from(e: LockdownTestResult) -> Self {
+        LockdownError::LockdownTestFailed(e)
+    }
+}
+
+impl From<crate::Error> for LockdownError {
+    fn from(e: crate::Error) -> Self {
+        LockdownError::Error(e)
+    }
+}
+
+impl From<String> for LockdownError {
+    fn from(e: String) -> Self {
+        // Convert string to crate::Error
+        LockdownError::Error(e.into())
+    }
+}
+
+impl From<&str> for LockdownError {
+    fn from(e: &str) -> Self {
+        // Convert str to crate::Error
+        LockdownError::Error(e.to_string().into())
+    }
+}
+
+impl std::error::Error for LockdownError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LockdownError::Error(e) => e.source(),
+            LockdownError::LockdownTestFailed(_) => None,
+        }
+    }
 }
 
 /// To ensure two lockdowns don't conflict with each other, we need some information about what all lockdowns are handling
@@ -228,7 +404,7 @@ where
         pgc: &[serenity::all::GuildChannel],
         critical_roles: &HashSet<serenity::all::RoleId>,
         lockdowns: &[Lockdown],
-    ) -> Result<Box<dyn LockdownTestResult>, Error>;
+    ) -> Result<LockdownTestResult, Error>;
 
     /// Sets up the lockdown mode, returning any data to be stored in database
     async fn setup(
@@ -495,11 +671,39 @@ pub trait LockdownDataStore: Send + Send {
     fn http(&self) -> &serenity::all::Http;
 }
 
+pub struct GuildData {
+    partial_guild: serenity::all::PartialGuild,
+    guild_channels: Vec<serenity::all::GuildChannel>,
+}
+
+impl GuildData {
+    pub async fn create<T: LockdownDataStore>(
+        guild_id: GuildId,
+        data_store: &T,
+    ) -> Result<Self, Error> {
+        let pg = data_store
+            .guild(guild_id)
+            .await
+            .map_err(|e| format!("Error while fetching guild: {}", e))?;
+
+        let pgc = data_store
+            .guild_channels(guild_id)
+            .await
+            .map_err(|e| format!("Error while fetching guild channels: {}", e))?;
+
+        Ok(GuildData {
+            partial_guild: pg,
+            guild_channels: pgc,
+        })
+    }
+}
+
 /// Represents a list of lockdowns
 pub struct LockdownSet<T: LockdownDataStore> {
     pub data_store: T,
     pub lockdowns: Vec<Lockdown>,
     pub settings: GuildLockdownSettings,
+    pub guild_data: Option<GuildData>,
     pub guild_id: serenity::all::GuildId,
 }
 
@@ -510,6 +714,7 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         let settings = data_store.get_guild_lockdown_settings(guild_id).await?;
 
         Ok(LockdownSet {
+            guild_data: None,
             data_store,
             lockdowns,
             settings,
@@ -523,6 +728,7 @@ impl<T: LockdownDataStore> LockdownSet<T> {
             .sort_by(|a, b| b.r#type.specificity().cmp(&a.r#type.specificity()));
     }
 
+    /// Returns the handles for all lockdowns
     pub fn get_handles(
         &self,
         pg: &serenity::all::PartialGuild,
@@ -549,54 +755,54 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         Ok(handles)
     }
 
-    /// Helper method to apply a lockdown without needing to manually perform fetches
-    pub async fn easy_apply(
-        &mut self,
-        lockdown_type: Box<dyn LockdownMode>,
-        reason: &str,
-    ) -> Result<uuid::Uuid, Error> {
-        let mut pg = self
-            .data_store
-            .guild(self.guild_id)
-            .await
-            .map_err(|e| format!("Error while fetching guild: {}", e))?;
-
-        let mut pgc = self
-            .data_store
-            .guild_channels(self.guild_id)
-            .await
-            .map_err(|e| format!("Error while fetching guild channels: {}", e))?;
-
-        self.apply(lockdown_type, reason, &mut pg, &mut pgc).await
-    }
-
     /// Adds a lockdown to the set returning the id of the created entry
+    ///
+    /// This will lazily initialize the `guild_data` if it has not been initialized yet.
     pub async fn apply(
         &mut self,
         lockdown_type: Box<dyn LockdownMode>,
         reason: &str,
-        pg: &mut serenity::all::PartialGuild,
-        pgc: &mut [serenity::all::GuildChannel],
-    ) -> Result<uuid::Uuid, Error> {
-        let critical_roles = get_critical_roles(pg, &self.settings.member_roles)?;
+    ) -> Result<uuid::Uuid, LockdownError> {
+        let guild_data = match self.guild_data {
+            Some(ref data) => data,
+            None => {
+                // Create guild data if not already present
+                let data = GuildData::create(self.guild_id, &self.data_store).await?;
+                self.guild_data = Some(data);
+                self.guild_data
+                    .as_ref()
+                    .ok_or("Guild data was not initialized properly")? // This should not happen, but just in case
+            }
+        };
+
+        let critical_roles =
+            get_critical_roles(&guild_data.partial_guild, &self.settings.member_roles)?;
 
         // Test new lockdown if required
         if self.settings.require_correct_layout {
             let test_results = lockdown_type
-                .test(pg, pgc, &critical_roles, &self.lockdowns)
+                .test(
+                    &guild_data.partial_guild,
+                    &guild_data.guild_channels,
+                    &critical_roles,
+                    &self.lockdowns,
+                )
                 .await?;
 
             if !test_results.can_apply_perfectly() {
-                return Err(test_results.display_result(pg).into());
+                return Err(test_results.into());
             }
         }
 
         // Setup the lockdown
         let data = lockdown_type
-            .setup(pg, pgc, &critical_roles, &self.lockdowns)
+            .setup(
+                &guild_data.partial_guild,
+                &guild_data.guild_channels,
+                &critical_roles,
+                &self.lockdowns,
+            )
             .await?;
-
-        let current_handles = self.get_handles(pg, pgc)?;
 
         let created_lockdown = self
             .data_store
@@ -610,12 +816,24 @@ impl<T: LockdownDataStore> LockdownSet<T> {
             )
             .await?;
 
+        let current_handles =
+            self.get_handles(&guild_data.partial_guild, &guild_data.guild_channels)?;
+
+        // Avoid borrow checking issues here
+        let guild_data_mut = match self.guild_data {
+            Some(ref mut data) => data,
+            None => {
+                // This should not happen, but just in case
+                return Err("Guild data was not initialized properly".into());
+            }
+        };
+
         // Apply the lockdown
         created_lockdown
             .r#type
             .create(
-                pg,
-                pgc,
+                &mut guild_data_mut.partial_guild,
+                &mut guild_data_mut.guild_channels,
                 &critical_roles,
                 &created_lockdown.data,
                 &current_handles,
@@ -632,54 +850,59 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         Ok(id)
     }
 
-    /// Helper method to apply a lockdown without needing to manually perform fetches
-    pub async fn easy_remove(&mut self, id: uuid::Uuid) -> Result<(), Error> {
-        let mut pg = self
-            .data_store
-            .guild(self.guild_id)
-            .await
-            .map_err(|e| format!("Error while fetching guild: {}", e))?;
-
-        let mut pgc = self
-            .data_store
-            .guild_channels(self.guild_id)
-            .await
-            .map_err(|e| format!("Error while fetching guild channels: {}", e))?;
-
-        self.remove(id, &mut pg, &mut pgc).await
-    }
-
     /// Removes a lockdown from the set
-    pub async fn remove(
-        &mut self,
-        id: uuid::Uuid,
-        pg: &mut serenity::all::PartialGuild,
-        pgc: &mut [serenity::all::GuildChannel],
-    ) -> Result<(), Error> {
+    ///
+    /// This will lazily initialize the `guild_data` if it has not been initialized yet.
+    pub async fn remove(&mut self, id: uuid::Uuid) -> Result<(), LockdownError> {
+        let guild_data = match self.guild_data {
+            Some(ref data) => data,
+            None => {
+                // Create guild data if not already present
+                let data = GuildData::create(self.guild_id, &self.data_store).await?;
+                self.guild_data = Some(data);
+                self.guild_data
+                    .as_ref()
+                    .ok_or("Guild data was not initialized properly")? // This should not happen, but just in case
+            }
+        };
+
         let lockdown = self
             .lockdowns
             .iter()
             .find(|l| l.id == id)
             .ok_or("Lockdown not found")?;
 
-        let critical_roles = get_critical_roles(pg, &self.settings.member_roles)?;
+        let critical_roles =
+            get_critical_roles(&guild_data.partial_guild, &self.settings.member_roles)?;
 
-        let mut current_handles = self.get_handles(pg, pgc)?;
+        let mut current_handles =
+            self.get_handles(&guild_data.partial_guild, &guild_data.guild_channels)?;
 
         // Remove handle from the set
-        let handle =
-            lockdown
-                .r#type
-                .handles(pg, pgc, &critical_roles, &lockdown.data, &self.lockdowns)?;
+        let handle = lockdown.r#type.handles(
+            &guild_data.partial_guild,
+            &guild_data.guild_channels,
+            &critical_roles,
+            &lockdown.data,
+            &self.lockdowns,
+        )?;
 
         current_handles.remove_handle(&handle, lockdown.r#type.specificity());
 
         // Revert the lockdown
+        let guild_data_mut = match self.guild_data {
+            Some(ref mut data) => data,
+            None => {
+                // This should not happen, but just in case
+                return Err("Guild data was not initialized properly".into());
+            }
+        };
+
         lockdown
             .r#type
             .revert(
-                pg,
-                pgc,
+                &mut guild_data_mut.partial_guild,
+                &mut guild_data_mut.guild_channels,
                 &critical_roles,
                 &lockdown.data,
                 &current_handles,
@@ -701,17 +924,16 @@ impl<T: LockdownDataStore> LockdownSet<T> {
     }
 
     /// Remove all lockdowns in order of specificity
-    pub async fn remove_all(
-        &mut self,
-        pg: &mut serenity::all::PartialGuild,
-        pgc: &mut [serenity::all::GuildChannel],
-    ) -> Result<(), Error> {
+    pub async fn remove_all(&mut self) -> Result<(), LockdownError> {
         self.sort();
 
         let ids = self.lockdowns.iter().map(|l| l.id).collect::<Vec<_>>();
 
         for id in ids {
-            self.remove(id, pg, pgc).await?;
+            // We can take advantage of the fact that `remove` lazily caches the `guild_data`
+            // to ensure that we can remove all lockdowns in order of specificity
+            // without needing to re-fetch the guild data each time
+            self.remove(id).await?;
         }
 
         // Update self.lockdowns
@@ -724,7 +946,6 @@ impl<T: LockdownDataStore> LockdownSet<T> {
 /// Quick server lockdown
 pub mod qsl {
     use super::*;
-    use serde::{Deserialize, Serialize};
 
     /// The base permissions for quick lockdown
     ///
@@ -736,44 +957,6 @@ pub mod qsl {
 
     static LOCKDOWN_PERMS: std::sync::LazyLock<serenity::all::Permissions> =
         std::sync::LazyLock::new(|| serenity::all::Permissions::VIEW_CHANNEL);
-
-    /// The result of a `test_quick_lockdown` call
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct QuickLockdownTestResult {
-        /// Which roles need to be changed/fixed combined with the target perms
-        pub changes_needed: std::collections::HashMap<
-            serenity::all::RoleId,
-            (ChangeOp, serenity::all::Permissions),
-        >,
-        /// The critical roles
-        pub critical_roles: HashSet<serenity::all::RoleId>,
-    }
-
-    impl LockdownTestResult for QuickLockdownTestResult {
-        /// Returns whether the guild is in a state where quick lockdown can be applied perfectly
-        fn can_apply_perfectly(&self) -> bool {
-            self.changes_needed.is_empty()
-        }
-
-        fn display_result(&self, pg: &serenity::all::PartialGuild) -> String {
-            let mut needed_changes = String::new();
-
-            needed_changes.push_str("The following roles need to be changed:\n");
-            for (role_id, perms) in self.changes_needed.iter() {
-                let role_name = pg
-                    .roles
-                    .get(role_id)
-                    .map(|r| r.name.to_string())
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                needed_changes.push_str(&format!("Role: {} ({})\n", role_name, role_id));
-                needed_changes.push_str(&format!("Permissions: {} {}\n", perms.0, perms.1));
-                needed_changes.push('\n');
-            }
-
-            needed_changes
-        }
-    }
 
     pub struct CreateQuickServerLockdown;
 
@@ -830,7 +1013,7 @@ pub mod qsl {
             _pgc: &[serenity::all::GuildChannel],
             critical_roles: &HashSet<serenity::all::RoleId>,
             _lockdowns: &[Lockdown], // We dont need to care about other lockdowns
-        ) -> Result<Box<dyn LockdownTestResult>, Error> {
+        ) -> Result<LockdownTestResult, Error> {
             let mut changes_needed = std::collections::HashMap::new();
 
             // From here on out, we only need to care about critical and non critical roles
@@ -866,10 +1049,7 @@ pub mod qsl {
                 }
             }
 
-            Ok(Box::new(QuickLockdownTestResult {
-                changes_needed,
-                critical_roles: critical_roles.clone(),
-            }))
+            Ok(LockdownTestResult::new(changes_needed, vec![]))
         }
 
         async fn setup(
@@ -1004,7 +1184,6 @@ pub mod qsl {
 /// Traditional server lockdown (lock all channels)
 pub mod tsl {
     use super::*;
-    use serde::{Deserialize, Serialize};
 
     static DENY_PERMS: std::sync::LazyLock<serenity::all::Permissions> =
         std::sync::LazyLock::new(|| {
@@ -1013,21 +1192,6 @@ pub mod tsl {
                 | serenity::all::Permissions::SEND_TTS_MESSAGES
                 | serenity::all::Permissions::CONNECT
         });
-
-    // The big advantage of TSL is the lack of constraints/tests regarding server layout
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct TraditionalLockdownTestResult;
-
-    impl LockdownTestResult for TraditionalLockdownTestResult {
-        fn can_apply_perfectly(&self) -> bool {
-            log::info!("Called can_apply_perfectly");
-            true
-        }
-
-        fn display_result(&self, _pg: &serenity::all::PartialGuild) -> String {
-            "".to_string()
-        }
-    }
 
     pub struct CreateTraditionalServerLockdown;
 
@@ -1091,9 +1255,8 @@ pub mod tsl {
             _pgc: &[serenity::all::GuildChannel],
             _critical_roles: &HashSet<serenity::all::RoleId>,
             _lockdowns: &[Lockdown],
-        ) -> Result<Box<dyn LockdownTestResult>, Error> {
-            log::info!("Called test");
-            Ok(Box::new(TraditionalLockdownTestResult))
+        ) -> Result<LockdownTestResult, Error> {
+            Ok(LockdownTestResult::empty())
         }
 
         async fn setup(
@@ -1311,7 +1474,6 @@ pub mod tsl {
 /// Single channel lock
 pub mod scl {
     use super::*;
-    use serde::{Deserialize, Serialize};
 
     static DENY_PERMS: std::sync::LazyLock<serenity::all::Permissions> =
         std::sync::LazyLock::new(|| {
@@ -1320,20 +1482,6 @@ pub mod scl {
                 | serenity::all::Permissions::SEND_TTS_MESSAGES
                 | serenity::all::Permissions::CONNECT
         });
-
-    // The big advantage of TSL is the lack of constraints/tests regarding server layout
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct SingleChannelLockdownTestResult;
-
-    impl LockdownTestResult for SingleChannelLockdownTestResult {
-        fn can_apply_perfectly(&self) -> bool {
-            true
-        }
-
-        fn display_result(&self, _pg: &serenity::all::PartialGuild) -> String {
-            "".to_string()
-        }
-    }
 
     pub struct CreateSingleChannelLockdown;
 
@@ -1396,8 +1544,8 @@ pub mod scl {
             _pgc: &[serenity::all::GuildChannel],
             _critical_roles: &HashSet<serenity::all::RoleId>,
             _lockdowns: &[Lockdown],
-        ) -> Result<Box<dyn LockdownTestResult>, Error> {
-            Ok(Box::new(SingleChannelLockdownTestResult))
+        ) -> Result<LockdownTestResult, Error> {
+            Ok(LockdownTestResult::empty())
         }
 
         async fn setup(
@@ -1559,19 +1707,6 @@ pub mod role {
                 | serenity::all::Permissions::MANAGE_THREADS
         });
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
-    pub struct RoleLockdownTestResult;
-
-    impl LockdownTestResult for RoleLockdownTestResult {
-        fn can_apply_perfectly(&self) -> bool {
-            true
-        }
-
-        fn display_result(&self, _pg: &serenity::all::PartialGuild) -> String {
-            "".to_string()
-        }
-    }
-
     pub struct CreateRoleLockdown;
 
     #[async_trait]
@@ -1637,8 +1772,8 @@ pub mod role {
             _pgc: &[serenity::all::GuildChannel],
             _critical_roles: &HashSet<serenity::all::RoleId>,
             _lockdowns: &[Lockdown],
-        ) -> Result<Box<dyn LockdownTestResult>, Error> {
-            Ok(Box::new(RoleLockdownTestResult))
+        ) -> Result<LockdownTestResult, Error> {
+            Ok(LockdownTestResult::empty())
         }
 
         async fn setup(
