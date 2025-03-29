@@ -483,6 +483,7 @@ impl<'de> Deserialize<'de> for Box<dyn LockdownMode> {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GuildLockdownSettings {
     pub member_roles: HashSet<serenity::all::RoleId>,
     pub require_correct_layout: bool,
