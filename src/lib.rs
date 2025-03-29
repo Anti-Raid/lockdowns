@@ -507,6 +507,18 @@ pub struct Lockdown {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+impl Clone for Lockdown {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            reason: self.reason.clone(),
+            r#type: self.r#type.clone(),
+            data: self.data.clone(),
+            created_at: self.created_at,
+        }
+    }
+}
+
 impl Lockdown {
     /// Merges a set of lockdown sharable data's assuming that least recent lockdowns are first
     fn merge_lsd(lsd: Vec<LockdownSharableData>) -> LockdownSharableData {
@@ -719,6 +731,7 @@ pub struct LockdownSet<T: LockdownDataStore> {
 }
 
 impl<T: LockdownDataStore> LockdownSet<T> {
+    /// Creates a new `LockdownSet` for a given guild
     pub async fn guild(guild_id: serenity::all::GuildId, data_store: T) -> Result<Self, Error> {
         let lockdowns = data_store.get_lockdowns(guild_id).await?;
 
@@ -733,6 +746,11 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         })
     }
 
+    /// Returns the inner lockdowns present in the set
+    pub fn lockdowns(&self) -> &[Lockdown] {
+        &self.lockdowns
+    }
+
     /// Sorts the lockdowns by specificity in descending order
     pub fn sort(&mut self) {
         self.lockdowns
@@ -740,7 +758,9 @@ impl<T: LockdownDataStore> LockdownSet<T> {
     }
 
     /// Returns the handles for all lockdowns
-    pub fn get_handles(
+    ///
+    /// This is internal (for good reason) and may be removed/replaced with better algorithms in the future
+    fn get_handles(
         &self,
         pg: &serenity::all::PartialGuild,
         pgc: &[serenity::all::GuildChannel],
