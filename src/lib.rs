@@ -723,11 +723,11 @@ impl GuildData {
 
 /// Represents a list of lockdowns
 pub struct LockdownSet<T: LockdownDataStore> {
-    pub data_store: T,
-    pub lockdowns: Vec<Lockdown>,
-    pub settings: GuildLockdownSettings,
-    pub guild_data: Option<GuildData>,
-    pub guild_id: serenity::all::GuildId,
+    data_store: T,
+    lockdowns: Vec<Lockdown>,
+    settings: GuildLockdownSettings,
+    guild_data: Option<GuildData>,
+    guild_id: serenity::all::GuildId,
 }
 
 impl<T: LockdownDataStore> LockdownSet<T> {
@@ -746,9 +746,24 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         })
     }
 
+    /// Returns the inner data store
+    pub fn data_store(&self) -> &T {
+        &self.data_store
+    }
+
     /// Returns the inner lockdowns present in the set
     pub fn lockdowns(&self) -> &[Lockdown] {
         &self.lockdowns
+    }
+
+    /// Returns the settings of the lockdown
+    pub fn settings(&self) -> &GuildLockdownSettings {
+        &self.settings
+    }
+
+    /// Returns the guild id of the lockdown set
+    pub fn guild_id(&self) -> serenity::all::GuildId {
+        self.guild_id
     }
 
     /// Sorts the lockdowns by specificity in descending order
