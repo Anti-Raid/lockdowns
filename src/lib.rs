@@ -371,6 +371,9 @@ pub trait CreateLockdownMode
 where
     Self: Send + Sync,
 {
+    /// Clones the `CreateLockdownMode` instance
+    fn clone(&self) -> Box<dyn CreateLockdownMode>;
+
     /// Returns the syntax for the lockdown mode
     ///
     /// E.g. `qsl` for Quick Server Lockdown, `scl/{channel_id}` for Single Channel Lockdown
@@ -386,6 +389,9 @@ pub trait LockdownMode
 where
     Self: Send + Sync,
 {
+    /// Clones the lockdown mode
+    fn clone(&self) -> Box<dyn LockdownMode>;
+
     /// Returns the creator for the lockdown mode
     fn creator(&self) -> Box<dyn CreateLockdownMode>;
 
@@ -958,10 +964,15 @@ pub mod qsl {
     static LOCKDOWN_PERMS: std::sync::LazyLock<serenity::all::Permissions> =
         std::sync::LazyLock::new(|| serenity::all::Permissions::VIEW_CHANNEL);
 
+    #[derive(Clone, Copy)]
     pub struct CreateQuickServerLockdown;
 
     #[async_trait]
     impl CreateLockdownMode for CreateQuickServerLockdown {
+        fn clone(&self) -> Box<dyn CreateLockdownMode> {
+            Box::new(CreateQuickServerLockdown)
+        }
+
         fn syntax(&self) -> &'static str {
             "qsl"
         }
@@ -975,6 +986,7 @@ pub mod qsl {
         }
     }
 
+    #[derive(Clone, Copy)]
     pub struct QuickServerLockdown;
 
     impl QuickServerLockdown {
@@ -994,6 +1006,10 @@ pub mod qsl {
 
     #[async_trait]
     impl LockdownMode for QuickServerLockdown {
+        fn clone(&self) -> Box<dyn LockdownMode> {
+            Box::new(QuickServerLockdown)
+        }
+
         fn creator(&self) -> Box<dyn CreateLockdownMode> {
             Box::new(CreateQuickServerLockdown)
         }
@@ -1197,6 +1213,10 @@ pub mod tsl {
 
     #[async_trait]
     impl CreateLockdownMode for CreateTraditionalServerLockdown {
+        fn clone(&self) -> Box<dyn CreateLockdownMode> {
+            Box::new(CreateTraditionalServerLockdown)
+        }
+
         fn syntax(&self) -> &'static str {
             "tsl"
         }
@@ -1235,6 +1255,10 @@ pub mod tsl {
 
     #[async_trait]
     impl LockdownMode for TraditionalServerLockdown {
+        fn clone(&self) -> Box<dyn LockdownMode> {
+            Box::new(TraditionalServerLockdown)
+        }
+
         fn creator(&self) -> Box<dyn CreateLockdownMode> {
             Box::new(CreateTraditionalServerLockdown)
         }
@@ -1487,6 +1511,10 @@ pub mod scl {
 
     #[async_trait]
     impl CreateLockdownMode for CreateSingleChannelLockdown {
+        fn clone(&self) -> Box<dyn CreateLockdownMode> {
+            Box::new(CreateSingleChannelLockdown)
+        }
+
         fn syntax(&self) -> &'static str {
             "scl/<channel_id>"
         }
@@ -1524,6 +1552,11 @@ pub mod scl {
 
     #[async_trait]
     impl LockdownMode for SingleChannelLockdown {
+        fn clone(&self) -> Box<dyn LockdownMode> {
+            // Return a new instance of the same type
+            Box::new(SingleChannelLockdown(self.0))
+        }
+
         fn creator(&self) -> Box<dyn CreateLockdownMode> {
             Box::new(CreateSingleChannelLockdown)
         }
@@ -1711,6 +1744,11 @@ pub mod role {
 
     #[async_trait]
     impl CreateLockdownMode for CreateRoleLockdown {
+        fn clone(&self) -> Box<dyn CreateLockdownMode> {
+            // Return a new instance of the same type
+            Box::new(CreateRoleLockdown)
+        }
+
         fn syntax(&self) -> &'static str {
             "role/<role_id>"
         }
@@ -1752,6 +1790,11 @@ pub mod role {
 
     #[async_trait]
     impl LockdownMode for RoleLockdown {
+        fn clone(&self) -> Box<dyn LockdownMode> {
+            // Return a new instance of the same type
+            Box::new(RoleLockdown(self.0))
+        }
+
         fn creator(&self) -> Box<dyn CreateLockdownMode> {
             Box::new(CreateRoleLockdown)
         }
