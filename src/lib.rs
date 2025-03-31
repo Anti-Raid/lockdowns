@@ -767,6 +767,23 @@ impl<T: LockdownDataStore> LockdownSet<T> {
         self.guild_id
     }
 
+    /// Returns the partial guild
+    pub async fn partial_guild(&mut self) -> Result<&serenity::all::PartialGuild, Error> {
+        let guild_data = match self.guild_data {
+            Some(ref data) => data,
+            None => {
+                // Create guild data if not already present
+                let data = GuildData::create(self.guild_id, &self.data_store).await?;
+                self.guild_data = Some(data);
+                self.guild_data
+                    .as_ref()
+                    .ok_or("Guild data was not initialized properly")? // This should not happen, but just in case
+            }
+        };
+
+        Ok(&guild_data.partial_guild)
+    }
+
     /// Sorts the lockdowns by specificity in descending order
     pub fn sort(&mut self) {
         self.lockdowns
