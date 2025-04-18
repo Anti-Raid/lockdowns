@@ -651,7 +651,7 @@ pub struct CreateLockdown {
 }
 
 #[allow(async_fn_in_trait)]
-pub trait LockdownDataStore: Send + Send {
+pub trait LockdownDataStore {
     /// Returns the guilds lockdown settings
     async fn get_guild_lockdown_settings(
         &self,
